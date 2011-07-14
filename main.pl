@@ -1,94 +1,118 @@
 #! /usr/bin/perl -w
+use strict;
 use locale;
+use Switch;
 
-$errorlog = "errorlog.txt"; # файл, в который будут записываться сообщения об ошибках
-$usage = "elbis \[-p\|-t\|-c\|-pa\|-r\|-f\|-y\] filein \[fileout\]"; # подсказка
+our $errorlog = "error.log";
+my $usage = "elbis \[-p\|-t\|-c\|-pa\|-r\|-f\|-y\] filein \[fileout\]";
+my ($flags, $filein, $fileout);
 
-# Обработка неразрешённых аргументов командной строки
+# Handle invalid command line arguments
 if ((scalar @ARGV == 0) or (scalar @ARGV >= 4))
 	{ die "Error 01\. Command line arguments are invalid\. Usage\: $usage\.\n"; }
-# Чтение аргументов
-elsif (scalar @ARGV == 1) { $filein = $ARGV[0]; } # один параметр: входной файл
-elsif ((scalar @ARGV == 2) and ($ARGV[0] =~ /\./)) { ($filein, $fileout) = @ARGV; } # два параметра: входной и выходной файлы
-elsif ((scalar @ARGV == 2) and ($ARGV[0] !~ /\./)) { ($flags, $filein) = @ARGV; } # два параметра: флаг и входной файл
-elsif (scalar @ARGV == 3) { ($flags, $filein, $fileout) = @ARGV; } # заданы все три параметра
+# Read arguments into variables
+# single parameter is the input file
+elsif (scalar @ARGV == 1) { $filein = $ARGV[0]; }
+# two parameters with the first one containing a dot represent input & output filehandles
+elsif ((scalar @ARGV == 2) and ($ARGV[0] =~ /\./)) { ($filein, $fileout) = @ARGV; }
+# otherwise these are flag & input file
+elsif ((scalar @ARGV == 2) and ($ARGV[0] !~ /\./)) { ($flags, $filein) = @ARGV; }
+# all three may be specified as well
+elsif (scalar @ARGV == 3) { ($flags, $filein, $fileout) = @ARGV; }
 
-# Отсечение пути к файлу
-# $filein = s/(([^\\\/]+(\\|\/))+)(.+)$/$4/igsx;
-# Не реализовано, потому что вызывало проблемы
+# Truncate the path
+# $filein = s/^(([^\\\/]+(\\|\/))+)(.+)$/$4/igsx;
+# This implementation is problematic due to some unnoticed bug
 
-# Умолчания
-unless ($flags) { $flags = "-p"; } # флаг
-unless ($fileout) # выходной файл
+# Defaults
+unless ($flags) { $flags = "-p"; } # pairwise is the default mode
+unless ($fileout)
 	{
 	$fileout = $filein;
 	$fileout =~ s/([^.]+)(\.(txt|csv))/$1/igsx;
-	$fileout .= "_res" . $flags . ".txt"; # к имени входного файла прибавляются постфикс _res и флаг
+	$fileout .= "_res" . $flags . ".txt"; # $filein with _res postfix and a flag is the default output filehandle
 	}
 
-# Все разрешённые флаги
-$flagstemplate = "\-(p|t|c{1,2}|r|f|y)";
+# These are valid flags
+my $flagstemplate = "\-(p(a){0,1}|t|c|r|f|y)";
+# The options are not intended for simultaneous usage; e.g. -ptc wouldn't work
 
-# Обработка неразрешённых флагов
+# Handle invalid flags
 unless ($flags =~ /$flagstemplate/igsx)
 	{ die "Error 02\: The flags seem to be invalid\.\nUsage\: $usage\.\n"; }
-# Обработка нечитаемого входного файла
+# Handle strange input file
 open (FILEIN, "<$filein")
 	or die "Error 03\: The specified input file could not be opened\.\n";
 
-# Чтение из входного файла
-my %answers = (); # ключи этого хэша – идентификаторы команд или игроков, а значения – двоичные строки ответов
+# Load input dataset into a hash
+# with identifiers as keys and binary strings as values
+our %answers;
+my (@splitted, $id);
 while (<FILEIN>)
 	{
 	chomp;
+	# Handle extra tabs
 	@splitted = split (/\t/, $_);
-	# Обработка неправильного форматирования входного файла
 	unless (scalar @splitted == 2) { error($_, '04'); }
+	# Handle non-unique identifiers
 	$id = $splitted[0];
-	# Обработка неуникальных идентификаторов
 	if ($answers{$id}) { error($id, '05'); }
+	# Otherwise proceed normally
 	$answers{$id} = $splitted[1];
 	}
 close (FILEIN);
 
-@players = sort keys %answers; # множество идентификаторов
-
-# Замер длины последней строки файла
-$thelength = length($splitted[1]);
+# List of all identifiers
+our @players = sort keys %answers;
+# Length of the binary string associated with the first identifier
+our $thelength = length($answers{$players[0]});
 foreach (@players)
 	{
-	# Обработка строк разной длины
+	# Handle strings of different length
 	unless (length($answers{$_}) == $thelength) { error($_, '06'); }
-	# Обработка строк с неразрешёнными символами
+	# Handle invalid symbols inside strings
 	if ($answers{$_} =~ /[^01\-\+]/igsx) { error($_, '07'); }
+	# '+' => '1', '-' => '0'
 	$answers{$_} =~ s/\-/0/igsx;
 	$answers{$_} =~ s/\+/1/igsx;
 	}
 
-# ОСНОВНАЯ ЧАСТЬ
-open (FILEOUT, ">$fileout");
+### MAIN ###
 
-# При флаге -p (pairwise)
-if ($flags eq "-p")
+open (our $HANDLE, ">$fileout");
+switch ($flags)
 	{
-	print FILEOUT "Команда\/игрок 1\tКоманда\/игрок 2\tR1\tR2\tCap\tCup\tSum\tJD\tCD\tHD\n";
-	for ($i = 0; $i < $#players; $i++) # фиксируем первый идентификатор
+	case "-p"  { pairwise(); }
+	case "-t"  { triplewise(); }
+	case "-c"  { concise(); }
+	case "-pa" { pairwise_average(); }
+	case "-r"  { random(); }
+	case "-f"  { formatting(); }
+	case "-y"  { young(); }
+	}
+close ($HANDLE);
+
+### SUBROUTINES ###
+
+# -p / pairwise
+sub pairwise
+	{
+	print $HANDLE "Team\/player 1\tTeam\/player 2\tR1\tR2\tCap\tCup\tSum\tJD\tCD\tHD\n";
+	for (my $i = 0; $i < $#players; $i++) # first identifier
 		{
-		for ($j = $i+1; $j <= $#players; $j++) # фиксируем второй идентификатор, обязательно не совпадающий с первым
+		my $first = $answers{$players[$i]};
+		my $scorefirst = $first =~ tr/1/1/;
+		for (my $j = $i+1; $j <= $#players; $j++) # necessarily distinct second identifier
 			{
-			# Строки
-			($first, $second) = ($answers{$players[$i]}, $answers{$players[$j]}); # строки ответов
-			$intersection = $first & $second; # строка, в которой единицы соответствуют вопросам, взятым обеими командами
-			$conjunction = $first | $second; # строка, в которой единицы соответствуют вопросам, взятым хотя бы одной командой
-			$hamming = $first ^ $second; # строка, в которой единицы соответствуют "совместным" нулям или единицам
-			# Величины
-			$scorefirst = $first =~ tr/1/1/; # первый результат
-			$scoresecond = $second =~ tr/1/1/; # второй результат
-			$scoreand = $intersection =~ tr/1/1/; # количество единиц в $intersection
-			$scoreor = $conjunction =~ tr/1/1/; # количество единиц в $conjunction
-			$scorexor = $hamming =~ tr/\0/\0/c; # расстояние Хемминга
-			$sum = $scorefirst + $scoresecond;
-			# Жаккар и косинус
+			my $second = $answers{$players[$j]};
+			my $scoresecond = $second =~ tr/1/1/;
+			# Compute some simple scores
+			my $scoreand = ($first & $second) =~ tr/1/1/; # questions answered by both teams
+			my $scoreor = ($first | $second) =~ tr/1/1/; # questions answered by at least one team
+			my $hamming = ($first ^ $second) =~ tr/\1/\1/; # questions simultaneously (un)answered by both teams
+			my $sum = $scorefirst + $scoresecond;
+			# Compute jaccard and cosine measures
+			my ($jaccard, $cosine);
 			if (($scorefirst == 0) and ($scoresecond == 0))
 				{ $jaccard = "UNDEF"; $cosine = "UNDEF"; }
 			elsif (($scorefirst == 0) or ($scoresecond == 0))
@@ -100,41 +124,49 @@ if ($flags eq "-p")
 				}
 			$jaccard =~ s/\./\,/igsx;
 			$cosine =~ s/\./\,/igsx;
-			# Вывод полученных сведений
-			print FILEOUT "$players[$i]\t$players[$j]\t$scorefirst\t$scoresecond\t$scoreand\t$scoreor\t$sum\t$jaccard\t$cosine\t$scorexor\n";
+			# Print the resultant tab-delimited string into file
+			print $HANDLE ($players[$i] . "\t" . $players[$j] . "\t" . $scorefirst . "\t" . $scoresecond . "\t" . $scoreand . "\t" . $scoreor . "\t" . $sum . "\t" . $jaccard . "\t" . $cosine . "\t" . $hamming . "\n");
 			}
 		}
 	}
-	
-# При флаге -t (triplewise)
-if ($flags eq "-t")
+
+# -t / triplewise
+sub triplewise
 	{
-	print FILEOUT "Команда\/игрок 1\tКоманда\/игрок 2\tКоманда\/игрок 3\tR1\tR2\tR3\tCup\tSum\n";
-	for ($i = 0; $i < $#players-1; $i++)
+	my (%totalscore, %sum, @triples); #
+	print $HANDLE "Team\/player 1\tTeam\/player 2\tTeam\/player 3\tR1\tR2\tR3\tCup\tSum\n";
+	# The three identifiers indexed $i, $j, and $k are necessarily distinct here too
+	for (my $i = 0; $i < $#players-1; $i++)
 		{
-		for ($j = $i+1; $j < $#players; $j++)
+		my $first = $answers{$players[$i]};
+		my $scorefirst = $first =~ tr/1/1/;
+		for (my $j = $i+1; $j < $#players; $j++)
 			{
-			for ($k = $j+1; $k <= $#players; $k++)
+			my $second = $answers{$players[$j]};
+			my $scoresecond = $second =~ tr/1/1/;
+			for (my $k = $j+1; $k <= $#players; $k++)
 				{
-				($first, $second, $third) = ($answers{$players[$i]}, $answers{$players[$j]}, $answers{$players[$k]});
-				$conjunction = $first | $second | $third;
-				$scorefirst = $first =~ tr/1/1/;
-				$scoresecond = $second =~ tr/1/1/;
-				$scorethird = $third =~ tr/1/1/;
-				$scoreor = $conjunction =~ tr/1/1/;
-				$triple = $players[$i] . "\t" . $players[$j] . "\t" . $players[$k] . "\t" . $scorefirst . "\t" . $scoresecond . "\t" . $scorethird;
+				# Retrieve binary strings
+				my $third = $answers{$players[$k]};
+				my $scorethird = $third =~ tr/1/1/;
+				# Compute only Cup
+				my $scoreor = ($first | $second | $third) =~ tr/1/1/;
+				# Compute Sum and associate Cup and Sum with the current triple using hashes
+				my $triple = $players[$i] . "\t" . $players[$j] . "\t" . $players[$k] . "\t" . $scorefirst . "\t" . $scoresecond . "\t" . $scorethird;
 				$totalscore{$triple} = $scoreor;
 				$sum{$triple} = $scorefirst + $scoresecond + $scorethird;
 				}
 			}
 		}
+	# Arrange sums in descending order and print everything to file
 	@triples = sort {$sum{$a} <=> $sum{$b}} keys %totalscore;
-	foreach (sort {$totalscore{$b} <=> $totalscore{$a}} @triples) { print FILEOUT "$_\t$totalscore{$_}\t$sum{$_}\n"; }
+	foreach (sort {$totalscore{$b} <=> $totalscore{$a}} @triples) { print $HANDLE ($_ . "\t" . $totalscore{$_} . "\t" . $sum{$_} . "\n"); }
 	}
 
-# При флаге -c (concise)
-if ($flags eq "-c")
+# -c / concise
+sub concise
 	{
+	my ($i, $j, $k, $nano, $ones, $zeros, $meanvalue, $first, $second, $hamming, @correct, %distribution, %scores);
 	for ($i = 0; $i <= $#players; $i++)
 		{
 		for ($k = 0; $k <= $thelength - 1; $k++)
@@ -145,43 +177,85 @@ if ($flags eq "-c")
 			else { $zeros++; }
 			}
 		}
-	for ($k = 0; $k <= $thelength - 1; $k++) { $meanvalue += 2 * $correct[$k] * ($#players - $correct[$k] + 1)/(($#players + 1)*($#players + 1)); }
-	print FILEOUT "$zeros нулей, $ones единиц, ожидаемое среднее хемминговское расстояние между строками $meanvalue\.\n";
+	for ($k = 0; $k <= $thelength - 1; $k++) { $meanvalue += 2 * $correct[$k] * ($#players - $correct[$k] + 1) / (($#players + 1) * ($#players + 1)); }
+	print $HANDLE "$zeros zeros, $ones ones, expected HD mean value is $meanvalue\.\n";
 	for ($i = 0; $i < $#players; $i++)
 		{
+		$first = $answers{$players[$i]};
 		for ($j = $i+1; $j <= $#players; $j++)
 			{
-			($first, $second) = ($answers{$players[$i]}, $answers{$players[$j]});
-			$hamming = $first ^ $second;
-			$scorexor = $hamming =~ tr/\0/\0/c;
-			$distribution{$scorexor}++;
+			$second = $answers{$players[$j]};
+			$hamming = ($first ^ $second) =~ tr/\1/\1/;
+			$distribution{$hamming}++;
 			}
 		}
-	print FILEOUT "\nРаспределение хемминговских расстояний (величина – количество)\:\n";
-	foreach (sort {$a <=> $b} keys %distribution) { print FILEOUT "$_\t$distribution{$_}\n"; }
-	print FILEOUT "\n№ вопроса\tЧисло правильных ответов\n";
-	for ($k = 0; $k <= $thelength - 1; $k++) { print FILEOUT (($k+1) . "\t$correct[$k]\n"); }
-	print FILEOUT "\nУклон (номер команды по убыванию результата – суммарная доля взятых)\:\n";
+	print $HANDLE "\nActually, the distribution of HDs looks like this\:\n";
+	foreach (sort {$a <=> $b} keys %distribution) { print $HANDLE ($_ . "\t" . $distribution{$_} . "\n"); }
+	print $HANDLE "\nНомер вопроса\tЧисло правильных ответов\n";
+	for ($k = 0; $k <= $thelength - 1; $k++) { print $HANDLE (($k+1) . "\t" . $correct[$k] . "\n"); }
+	print $HANDLE "\nУклон (номер команды по убыванию результата – суммарная доля взятых)\:\n";
 	for ($i = 0; $i <= $#players; $i++) { $scores{$i} = $answers{$players[$i]} =~ tr/1/1/; }
-	($counter, $upper) = 0;
+	my ($counter, $upper, $upper_average);
 	foreach (sort {$b <=> $a} values %scores)
 		{
 		$counter++;
 		$upper += $_;
 		$upper_average = sprintf "%.4f", $upper / $counter;
 		$upper_average =~ s/\./\,/igsx;
-		print FILEOUT "$counter\t$upper_average\n";
+		print $HANDLE ($counter . "\t" . $upper_average . "\n");
 		}
 	}
 
-# При флаге -pa (pairwise average)
-if ($flags eq "-cc")
+# -pa / pairwise average; most code reused from pairwise
+# WRITTEN IN A VERY "CHINESE" FASHION, TO BE IMPROVED
+sub pairwise_average
 	{
-	print STDOUT "Unimplemented yet!\n";
+	my (%average_jd, %average_cd, %average_hd);
+	print $HANDLE "Team\/player\tR\tAJD\tACD\tAHD\n";
+	for (my $i = 0; $i < $#players; $i++)
+		{
+		my $first = $answers{$players[$i]};
+		my $scorefirst = $first =~ tr/1/1/;
+		for (my $j = $i+1; $j <= $#players; $j++)
+			{
+			my $second = $answers{$players[$j]};
+			my $scoresecond = $second =~ tr/1/1/;
+			my $scoreand = ($first & $second) =~ tr/1/1/;
+			my $scoreor = ($first | $second) =~ tr/1/1/;
+			my $hamming = ($first ^ $second) =~ tr/\1/\1/;
+			my ($jaccard, $cosine);
+			if (($scorefirst == 0) and ($scoresecond == 0))
+				{ $jaccard = "UNDEF"; $cosine = "UNDEF"; }
+			elsif (($scorefirst == 0) or ($scoresecond == 0))
+				{ $jaccard = "0"; $cosine = "UNDEF"; }
+			else
+				{
+				$jaccard =  $scoreand / $scoreor;
+				$cosine = $scoreand / sqrt ($scorefirst * $scoresecond);
+				}
+			$average_jd{$players[$i]} += $jaccard;
+			$average_jd{$players[$j]} += $jaccard;
+			$average_cd{$players[$i]} += $cosine;
+			$average_cd{$players[$j]} += $cosine;
+			$average_hd{$players[$i]} += $hamming;
+			$average_hd{$players[$j]} += $hamming;
+			}
+		}
+	foreach (@players)
+		{
+		my $res = $answers{$_} =~ tr/1/1/;
+		$average_jd{$_} = sprintf "%.4f", $average_jd{$_} / ($#players - 1);
+		$average_cd{$_} = sprintf "%.4f", $average_cd{$_} / ($#players - 1);
+		$average_hd{$_} = sprintf "%.4f", $average_hd{$_} / ($#players - 1);
+		$average_jd{$_} =~ s/\./\,/igsx;
+		$average_cd{$_} =~ s/\./\,/igsx;
+		$average_hd{$_} =~ s/\./\,/igsx;
+		print $HANDLE $_ . "\t" . $res . "\t" . $average_jd{$_} . "\t" . $average_cd{$_} . "\t" . $average_hd{$_} . "\n";
+		}
 	}
 
-# При флаге -r (random)
-if ($flags eq "-r")
+# -r / random
+sub random
 	{
 	print STDOUT "Unimplemented yet!\n";
 =pod
@@ -195,24 +269,25 @@ if ($flags eq "-r")
 		}
 	for ($i = 0; $i <= $#players; $i++)
 		{
-		print FILEOUT ("Игрок " . ($i+1) . "\t");
+		print $HANDLE ("Игрок " . ($i+1) . "\t");
 		$resstring = "";
 		for ($k = 0; $k <= $thelength - 1; $k++)
 			{
-			# Экспериментальный код
+			# Experimental code
 			if (($correct[$k]/$#players >= 0.2) and (rand(2 * $correct[$k])/$#players >= 0.5)) { $resstring .= "1"; }
 			elsif ($correct[$k]/$#players <= 0.2) { $resstring .= sprintf(int(rand(8 * $correct[$k])/$#players)); }
 			else { $resstring .= "0"; }
-			# Конец экспериментального кода
+			# End of experimental code
 			}
-		print FILEOUT $resstring . "\n";
+		print $HANDLE $resstring . "\n";
 		}
 =cut
 	}
 
-# При флаге -f (formatting)
-if ($flags eq "-f")
+# -f / formatting
+sub formatting
 	{
+	my ($i, $j, $k, $nano, @row, @column);
 	for ($i = 0; $i <= $#players; $i++)
 		{
 		for ($k = 0; $k <= $thelength - 1; $k++)
@@ -222,24 +297,24 @@ if ($flags eq "-f")
 			$column[$k] += $nano;
 			}
 		}
-#	print FILEOUT "Таблица ожиданий с постолбцовыми суммами (из " . $thelength . ") и построчными суммами (из " . scalar(@players) . ")\:\n";
-	print FILEOUT "Таблица результатов с постолбцовыми суммами (из " . $thelength . ") и построчными суммами (из " . scalar(@players) . ")\:\n";
+#	print $HANDLE "Таблица ожиданий с постолбцовыми суммами (из " . $thelength . ") и построчными суммами (из " . scalar(@players) . ")\:\n";
+	print $HANDLE "Таблица результатов с постолбцовыми суммами (из " . $thelength . ") и построчными суммами (из " . scalar(@players) . ")\:\n";
 	for ($i = 0; $i <= $#players; $i++)
 		{
-		print FILEOUT "$players[$i]\t";
-#		for ($k = 0; $k <= $thelength - 1; $k++) { print FILEOUT sprintf ("%.4f", ($row[$i] * $column[$k])/($thelength * scalar(@players))) . "\t"; }
-		for ($k = 0; $k <= $thelength - 1; $k++) { print FILEOUT substr ($answers{$players[$i]}, $k, 1) . "\t"; }
-		print FILEOUT "$row[$i]\n";
+		print $HANDLE "$players[$i]\t";
+#		for ($k = 0; $k <= $thelength - 1; $k++) { print $HANDLE sprintf ("%.4f", ($row[$i] * $column[$k])/($thelength * scalar(@players))) . "\t"; }
+		for ($k = 0; $k <= $thelength - 1; $k++) { print $HANDLE substr ($answers{$players[$i]}, $k, 1) . "\t"; }
+		print $HANDLE "$row[$i]\n";
 		}
-	for ($k = 0; $k <= $thelength - 1; $k++) { print FILEOUT "\t$column[$k]"; }
-	print FILEOUT "\n";
+	for ($k = 0; $k <= $thelength - 1; $k++) { print $HANDLE "\t$column[$k]"; }
+	print $HANDLE "\n";
 	}
 
-# При флаге -y (Young)
-if ($flags eq "-y")
+# -y / Young
+sub young
 	{
+	my ($i, $ones, $zeroscore, $zeros, $resstring, %score);
 	foreach (@players) { $score{$_} = $answers{$_} =~ tr/1/1/; }
-	$i = 0;
 	foreach (sort { $score{$b} <=> $score{$a} } keys %score)
 		{
 		$i++;
@@ -247,29 +322,30 @@ if ($flags eq "-y")
 		$zeroscore = $thelength - $score{$_};
 		$zeros = "0" x $zeroscore;
 		$resstring = $ones . $zeros;
-		print FILEOUT "$_\t$i\t$score{$_}\t$resstring\n";
+		print $HANDLE "$_\t$i\t$score{$_}\t$resstring\n";
 		}
 	}
 
-close (FILEOUT);
-
-# Функция обработки ошибок, которые нуждаются в логировании
+# This generic function is responsible for error logging
+# Note that errors 01..03 are not logged
 sub error
 	{
-	# Предварительная информация
-	$closing_remark = "\.\nOffending input has been written on the error log\.\n";
-	%log = ('04' => "Error 04\. The following line of your input file is invalid\:\n",
+	# Prerequisites
+	my $closing_remark = "\.\nOffending input has been written on the error log\.\n";
+	my %log =
+		('04' => "Error 04\. The following line of your input file is invalid\:\n",
 		'05' => "Error 05\. The following identifier in your input file isn't unique\:\n",
 		'06' => "Error 06\. The following identifier in your input file references a string of unusual length\:\n",
 		'07' => "Error 07\. The following identifier in your input file references a string with impossible symbols in it\:\n");
-	%stdout = ('04' => "Error 04\:\nNot all lines of your input file are formatted in the right way",
+	my %stdout =
+		('04' => "Error 04\:\nNot all lines of your input file are formatted in the right way",
 		'05' => "Error 05\:\nNot all identifiers in your input file are unique",
 		'06' => "Error 06\:\nNot all binary strings in your input file have the same length",
 		'07' => "Error 07\:\nNot all binary strings in your input file contain just 0, 1, -, or +");
-	# Основной раздел функции
-	($cause, $code) = @_;
-	open (ERRORLOG, ">>$errorlog");
-	print ERRORLOG ($log{$code} . $cause . "\n");
-	close (ERRORLOG);
-	die $stdout{$code} . $closing_remark;
+	# Main
+	my ($cause, $errorcode) = @_;
+	open (my $EHANDLE, ">>$errorlog");
+	print $EHANDLE ($log{$errorcode} . $cause . "\n");
+	close ($EHANDLE);
+	die $stdout{$errorcode} . $closing_remark;
 	}
